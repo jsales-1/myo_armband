@@ -38,7 +38,7 @@ class Plot:
             ax.set_ylim([-100, 100])
             ax.set_ylabel("EMG")
             ax.grid(True)
-            ax.set_title(f"Canal {i}", loc='left', fontsize=10, pad=2)  # <<< Aqui mostra o número do canal
+            ax.set_title(f"Canal {i}", loc='left', fontsize=10, pad=2)  
 
         self.graphs = [
             ax.plot(np.arange(self.n), np.zeros(self.n), color=color)[0]
