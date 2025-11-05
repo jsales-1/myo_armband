@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador de Polegar 3D Autônomo</title>
+    <style>
+        :root {
+            --bg-color: #1a1a1a;
+            --text-color: #f0f0f0;
+            --primary-color: #00aaff;
+            --font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        }
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: var(--font-family);
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+       
+        canvas {
+            display: block;
+            outline: none;
+        }
+
+        .info-panel {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            background-color: rgba(40, 40, 40, 0.85);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 1rem;
+            max-width: 380px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            user-select: none;
+        }
+
+        .info-panel h1 {
+            font-size: 1.2rem;
+            margin: 0 0 1rem 0;
+            color: var(--primary-color);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding-bottom: 0.5rem;
+        }
+       
+        .info-panel .data-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+       
+        .data-row .value {
+            min-width: 50px;
+            text-align: right;
+            font-family: 'Courier New', Courier, monospace;
+            background: rgba(0,0,0,0.3);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        .error-panel {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            z-index: 100;
+        }
+        .error-panel-content {
+            background: rgba(40, 40, 40, 0.85);
+            padding: 2rem;
+            border-radius: 12px;
+            max-width: 500px;
+            border: 1px solid red;
+        }
+        .error-panel h2 { color: red; }
+        .hidden { display: none; }
+       
+        .tag-label {
+            position: absolute;
+            transform: translate(-50%, -50%);
+            color: #fff;
+            background: rgba(0,0,0,0.5);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container">
+        <canvas id="main-canvas"></canvas>
+    </div>
+
+    <div class="info-panel">
+        <h1>Ângulos do Polegar (CSV)</h1>
+        <p>Lendo dados de `forca.csv`...</p>
+        <div class="data-row"><span>MCP Flex/Ext (X)</span><span id="mcp-x-angle" class="value">0.0°</span></div>
+        <div class="data-row"><span>IP Flex/Ext (X)</span><span id="ip-x-angle" class="value">0.0°</span></div>
+    </div>
+   
+    <div id="error-panel" class="error-panel hidden">
+        <div class="error-panel-content">
+            <h2>Erro na Inicialização</h2>
+            <p id="error-message">Mensagem de erro aqui.</p>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/controls/OrbitControls.js"></script>
+   
+    <script type="module">
+    // --- CONFIG & CONSTANTS ---
+    const CONFIG = {
+        spring: 15.0,
+        maxDeltaTime: 0.05,
+        boneColor: 0xcccccc,
+        jointColor: 0x00aaff,
+        jointSize: 0.08,
+    };
+
+    const BONE_DIMS = {
+        metacarpal: { length: 1.2, width: 0.25 },
+        proximal: { length: 0.9, width: 0.22 },
+        distal: { length: 0.6, width: 0.20 },
+    };
+   
+    // --- STATE MANAGEMENT ---
+    // State holds the current, interpolated rotation values (in radians)
+    const state = {
+        cmc: { x: 0, y: 0, z: 0 },
+        mcp: { x: 0 },
+        ip:  { x: 0 }
+    };
+    // Target holds the desired rotation values, updated by the CSV
+    const target = {
+        cmc: { x: 0, y: 0, z: 0 },
+        mcp: { x: 0 },
+        ip:  { x: 0 }
+    };
+    // Limits for joint rotation (in degrees)
+    const limits = {
+        cmc: { x: { min: -50, max: 40 }, y: { min: -30, max: 30 }, z: { min: -30, max: 30 } },
+        mcp: { x: { min: -20, max: 80 } },
+        ip:  { x: { min: 0, max: 90 } }
+    };
+
+    // --- THREE.JS SETUP ---
+    let scene, camera, renderer, clock, controls;
+    let thumbRoot, pivots = {}, labels = {};
+    const canvas = document.getElementById('main-canvas');
+    const container = document.getElementById('canvas-container');
+   
+    // --- UTILITY FUNCTIONS ---
+    const degToRad = THREE.MathUtils.degToRad;
+    const radToDeg = THREE.MathUtils.radToDeg;
+   
+    function showError(message) {
+        document.getElementById('error-message').textContent = message;
+        document.getElementById('error-panel').classList.remove('hidden');
+    }
+
+    function init() {
+        if (typeof THREE === 'undefined') {
+            showError('A biblioteca Three.js não pôde ser carregada. Verifique sua conexão com a internet.');
+            return;
+        }
+        if (!isWebGLAvailable()) {
+            showError('Seu navegador não suporta WebGL ou está desativado. Esta aplicação requer WebGL para funcionar.');
+            return;
+        }
+
+        clock = new THREE.Clock();
+
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1a1a);
+
+        camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 1, 5);
+        camera.lookAt(0, 0, 0);
+
+        renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        directionalLight.position.set(5, 10, 7.5);
+        scene.add(directionalLight);
+
+        const gridHelper = new THREE.GridHelper(10, 10, 0x444444, 0x333333);
+        scene.add(gridHelper);
+       
+        buildThumbModel();
+        setupCameraControls();
+        setupEventListeners();
+
+        // Start CSV polling and render loop
+        setInterval(() => loadAndApplyCsvData('forca.csv'), 100);
+        animate();
+    }
+
+    function isWebGLAvailable() {
+        try {
+            const canvas = document.createElement('canvas');
+            return !!(window.WebGLRenderingContext && (canvas.getContext('webgl') || canvas.getContext('experimental-webgl')));
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function buildThumbModel() {
+        thumbRoot = new THREE.Object3D();
+        scene.add(thumbRoot);
+       
+        const boneMaterial = new THREE.MeshStandardMaterial({ color: CONFIG.boneColor, roughness: 0.6 });
+        const jointMaterial = new THREE.MeshStandardMaterial({ color: CONFIG.jointColor, emissive: CONFIG.jointColor, emissiveIntensity: 0.4 });
+        const jointGeometry = new THREE.SphereGeometry(CONFIG.jointSize, 16, 16);
+
+        const createBone = (name, dims) => {
+            const shape = new THREE.Group();
+            const geometry = new THREE.BoxGeometry(dims.width, dims.length, dims.width);
+            const mesh = new THREE.Mesh(geometry, boneMaterial);
+            mesh.position.y = dims.length / 2;
+            shape.add(mesh);
+            shape.name = name;
+            return shape;
+        };
+       
+        const createJoint = (name, parent, position) => {
+            const pivot = new THREE.Object3D();
+            pivot.name = name + "Pivot";
+            const marker = new THREE.Mesh(jointGeometry, jointMaterial);
+            marker.name = name + "Marker";
+            pivot.add(marker);
+            const axesHelper = new THREE.AxesHelper(0.3);
+            pivot.add(axesHelper);
+            pivot.position.copy(position);
+            parent.add(pivot);
+            pivots[name] = pivot;
+            return pivot;
+        };
+
+        const cmcPivot = createJoint('cmc', thumbRoot, new THREE.Vector3(0, 0, 0));
+        const metacarpal = createBone('metacarpal', BONE_DIMS.metacarpal);
+        cmcPivot.add(metacarpal);
+       
+        const mcpPivot = createJoint('mcp', metacarpal, new THREE.Vector3(0, BONE_DIMS.metacarpal.length, 0));
+        const proximal = createBone('proximal', BONE_DIMS.proximal);
+        mcpPivot.add(proximal);
+ 
+        const ipPivot = createJoint('ip', proximal, new THREE.Vector3(0, BONE_DIMS.proximal.length, 0));
+        const distal = createBone('distal', BONE_DIMS.distal);
+        ipPivot.add(distal);
+       
+        createTagLabel('CMC', cmcPivot);
+        createTagLabel('MCP', mcpPivot);
+        createTagLabel('IP', ipPivot);
+    }
+   
+    function createTagLabel(text, objectToAttach) {
+        const div = document.createElement('div');
+        div.className = 'tag-label';
+        div.textContent = text;
+        container.appendChild(div);
+        labels[text] = { element: div, object: objectToAttach };
+    }
+   
+    function updateTagLabels() {
+        const tempVec = new THREE.Vector3();
+        for (const key in labels) {
+            const label = labels[key];
+            label.object.updateWorldMatrix(true, false);
+            tempVec.setFromMatrixPosition(label.object.matrixWorld);
+            tempVec.project(camera);
+
+            const x = (tempVec.x * 0.5 + 0.5) * renderer.domElement.clientWidth;
+            const y = (tempVec.y * -0.5 + 0.5) * renderer.domElement.clientHeight;
+
+            label.element.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px)`;
+           
+            const isBehind = tempVec.z > 1;
+            label.element.style.display = isBehind ? 'none' : 'block';
+        }
+    }
+
+    function setupCameraControls() {
+        if (typeof THREE.OrbitControls !== 'undefined') {
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.target.set(0, 1, 0);
+            controls.update();
+        } else {
+            console.warn("OrbitControls not found. Usando fallback.");
+            setupFallbackControls();
+        }
+    }
+   
+    function setupFallbackControls() {
+        let isDragging = false, isPanning = false;
+        let prevMouse = { x: 0, y: 0 };
+        const onMouseDown = (e) => {
+            if (e.button === 0) isDragging = true;
+            if (e.button === 2) isPanning = true;
+            prevMouse.x = e.clientX;
+            prevMouse.y = e.clientY;
+        };
+        const onMouseMove = (e) => {
+            if (!isDragging && !isPanning) return;
+            const deltaX = e.clientX - prevMouse.x;
+            const deltaY = e.clientY - prevMouse.y;
+            const lookTarget = new THREE.Vector3(0,1,0);
+            const offset = camera.position.clone().sub(lookTarget);
+            if (isDragging) {
+                const theta = -deltaX * 0.005;
+                const phi = -deltaY * 0.005;
+                offset.applyAxisAngle(new THREE.Vector3(0,1,0), theta);
+                const perpendicular = new THREE.Vector3().crossVectors(offset, new THREE.Vector3(0,1,0)).normalize();
+                offset.applyAxisAngle(perpendicular, phi);
+                camera.position.copy(lookTarget).add(offset);
+            }
+            if(isPanning) {
+                 const panSpeed = 0.002 * offset.length();
+                 const up = camera.up.clone().multiplyScalar(deltaY * panSpeed);
+                 const right = new THREE.Vector3().crossVectors(camera.up, offset.clone().normalize()).multiplyScalar(-deltaX * panSpeed);
+                 camera.position.add(up).add(right);
+            }
+            camera.lookAt(lookTarget);
+            prevMouse.x = e.clientX;
+            prevMouse.y = e.clientY;
+        };
+        const onMouseUp = () => {
+            isDragging = false;
+            isPanning = false;
+        };
+        const onWheel = (e) => {
+            const zoomSpeed = 0.1;
+            const direction = camera.position.clone().sub(new THREE.Vector3(0,1,0)).normalize();
+            camera.position.addScaledVector(direction, -e.deltaY * zoomSpeed * 0.1);
+        };
+        canvas.addEventListener('mousedown', onMouseDown);
+        canvas.addEventListener('mousemove', onMouseMove);
+        canvas.addEventListener('mouseup', onMouseUp);
+        canvas.addEventListener('mouseleave', onMouseUp);
+        canvas.addEventListener('wheel', onWheel);
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+    }
+
+    // --- LOGIC & ANIMATION LOOP ---
+    function animate() {
+        requestAnimationFrame(animate);
+        const deltaTime = Math.min(clock.getDelta(), CONFIG.maxDeltaTime);
+        updateSpringSystem(deltaTime);
+        applyStateToModel();
+        updateUIDisplay();
+        updateTagLabels();
+        if (controls) controls.update();
+        renderer.render(scene, camera);
+    }
+   
+    function updateSpringSystem(dt) {
+        const k = CONFIG.spring;
+        const alpha = 1 - Math.exp(-k * dt);
+        
+        // CMC permanece em 0
+        target.cmc.x = 0;
+        target.cmc.y = 0;
+        target.cmc.z = 0;
+
+        for (const joint in state) {
+            for (const axis in state[joint]) {
+                state[joint][axis] = THREE.MathUtils.lerp(state[joint][axis], target[joint][axis], alpha);
+            }
+        }
+    }
+   
+    function applyStateToModel() {
+        pivots.cmc.rotation.set(state.cmc.x, state.cmc.y, state.cmc.z);
+        pivots.mcp.rotation.set(state.mcp.x, 0, 0);
+        pivots.ip.rotation.set(state.ip.x, 0, 0);
+    }
+   
+    // --- UI & EVENT HANDLING ---
+    function setupEventListeners() {
+        window.addEventListener('resize', onWindowResize);
+    }
+
+    function updateUIDisplay() {
+        document.getElementById('mcp-x-angle').textContent = `${radToDeg(state.mcp.x).toFixed(1)}°`;
+        document.getElementById('ip-x-angle').textContent = `${radToDeg(state.ip.x).toFixed(1)}°`;
+    }
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    
+    // --- CSV LOADING LOGIC ---
+    async function loadAndApplyCsvData(filename) {
+        try {
+            const response = await fetch(filename, { cache: 'no-store' }); // Força o navegador a buscar a versão mais recente
+            if (!response.ok) {
+                console.warn(`Aguardando o arquivo ${filename}...`);
+                return;
+            }
+            const csvText = await response.text();
+            const dataPoint = parseSimpleCsv(csvText);
+
+            if (dataPoint) {
+                target.mcp.x = degToRad(dataPoint.mcp);
+                target.ip.x = degToRad(dataPoint.ip);
+            }
+        } catch (error) {
+            console.error(`Falha ao ler o CSV: ${error.message}`);
+        }
+    }
+    
+    function parseSimpleCsv(csvString) {
+        const lines = csvString.trim().split('\n');
+        const dataLine = lines[1];
+        
+        if (!dataLine) return null;
+        
+        const values = dataLine.split(',').map(v => parseFloat(v.trim()));
+        
+        if (values.length >= 2 && !isNaN(values[0]) && !isNaN(values[1])) {
+            const mcpAngle = THREE.MathUtils.clamp(values[0], limits.mcp.x.min, limits.mcp.x.max);
+            const ipAngle = THREE.MathUtils.clamp(values[1], limits.ip.x.min, limits.ip.x.max);
+            return { mcp: mcpAngle, ip: ipAngle };
+        }
+        
+        return null;
+    }
+
+    // --- INITIALIZATION ---
+    document.addEventListener('DOMContentLoaded', init);
+    </script>
+ 
+</body>
+</html>
