@@ -68,7 +68,7 @@ HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Dedo Virtual - Canal 6 e 1</title>
+    <title>Dedo Virtual </title>
     <style>
         body { margin: 0; overflow: hidden; background: #1a1a1a; }
         #info {
@@ -81,7 +81,6 @@ HTML_TEMPLATE = '''
 </head>
 <body>
     <div id="info">
-        <div>Controle Canal 6 ↔ 1</div>
         <div>Ângulo MCP: <span id="angleMCP">0°</span></div>
         <div>Ângulo IP: <span id="angleIP">0°</span></div>
     </div>
@@ -173,5 +172,5 @@ def main():
     app.run(port=5000, debug=False)
 
 if __name__ == "__main__":
-    print("Iniciando controle com flexão/extensão (Canais 6 e 1)...")
+    print("Iniciando controle com flexão/extensão")
     main()
